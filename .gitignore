@@ -2,5 +2,3 @@ weights
 logs
 examples
 report.html
-lib/train/trainers/__pycache__
-lib/train/actors/__pycache__
