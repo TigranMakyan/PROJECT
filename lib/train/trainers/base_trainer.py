@@ -64,7 +64,43 @@ class BaseTrainer:
             load_latest - Bool indicating whether to resume from latest epoch.
             fail_safe - Bool indicating whether the training to automatically restart in case of any crashes.
         """
-        pass
+        epoch = -1
+        num_tries = 1
+        for i in range(num_tries):
+            try:
+                if load_latest:
+                    self.load_checkpoint()
+                if load_previous_ckpt:
+                    directory = '{}/{}'.format(self._checkpoint_dir, self.settings.project_path_prv)
+                    self.load_state_dict(directory)
+                if distill:
+                    directory_teacher = '{}/{}'.format(self._checkpoint_dir, self.settings.project_path_teacher)
+                    self.load_state_dict(directory_teacher)
+                for epoch in range(self.epoch + 1, max_epochs + 1):
+                    self.epoch = epoch
+                    self.train_epoch()
+
+                    if self.lr_scheduler is not None:
+                        if self.settings.scheduler_type != 'cosine':
+                            self.lr_scheduler.step()
+                        else:
+                            self.lr_scheduler.step(epoch - 1)
+                    save_every_epoch = getattr(self.settings, "save_every_epoch", False)
+                    if epoch > (max_epochs - 10) or save_every_epoch or epoch % 10 == 0:
+                        if self._checkpoint_dir:
+                            if self.settings.local_rank in [-1, 0]:
+                                self.save_checkpoint()
+            except:
+                print('Training crashed at epoch {}'.format(epoch))
+                if fail_safe:
+                    self.epoch -= 1
+                    load_latest = True
+                    print('TRaceback for the error!')
+                    print(traceback.format_exc())
+                    print('Restarting training from last epoch ...')
+                else:
+                    raise
+        print('Finished training!')
 
     def train_epoch(self):
         raise NotImplementedError
@@ -113,7 +149,70 @@ class BaseTrainer:
             load_checkpoint(path_to_checkpoint):
                 Loads the file from the given absolute path (str).
         """
-        pass
+        net = self.actor.net
+        actor_type = type(self.actor).__name__
+        net_type = type(net).__name__
+
+        if checkpoint is None:
+            #Load most recent checkpoint
+            checkpoint_list = sorted(glob.glob("{}/{}/{}_ep*.pth.tar".format(self._checkpoint_dir,
+                                                                             self.settings.project_path, net_type)))
+            if checkpoint_list:
+                checkpoint_path = checkpoint_list[-1]
+            else:
+                print('No matching checkpoint file found')
+                return 
+        elif isinstance(checkpoint, int):
+            #Checkpoint is the epoch number
+            checkpoint_path = "{}/{}/{}_ep{:04d}.pth.tar".format(self._checkpoint_dir, self.settings.project_path,
+                                                                 net_type, checkpoint)
+        elif isinstance(checkpoint, str):
+            #Checkpoint is the path
+            if os.path.isdir(checkpoint):
+                checkpoint_list = sorted(glob.glob('{}/*_ep*.pth.tar'.format(checkpoint)))
+                if checkpoint_list:
+                    checkpoint_path = checkpoint_list[-1]
+                else:
+                    raise Exception('No checkpoint found')
+            else:
+                checkpoint_path = os.path.expanduser(checkpoint)
+        else:
+            raise TypeError
+        
+        # Load network
+        checkpoint_dict = torch.load(checkpoint_path, map_location="cpu")
+        assert net_type == checkpoint_dict['net_type'], 'Network is nor of correct type'
+
+        if fields is None:
+            fields = checkpoint_dict.keys()
+        if ignore_fields is None:
+            ignore_fields = ["settings"]
+        
+        ignore_fields.extend(['lr_scheduler', 'constructor', 'net_type', 'actor_type', 'net_info'])
+
+        for key in fields:
+            if key in ignore_fields:
+                continue
+            if key == 'net':
+                net.load_state_dict(checkpoint_dict[key])
+            if key == 'optimizer':
+                self.optimizer.load_state_dict(checkpoint_dict[key])
+            else:
+                setattr(self, key, checkpoint_dict)
+        
+        if load_constructor and 'contructor' in checkpoint_dict and checkpoint_dict['constructor'] is not None:
+            net.constructor = checkpoint_dict['constructor']
+        if "net_info" in checkpoint_dict and checkpoint_dict['net_info'] is not None:
+            net_info = checkpoint_dict['net_info']
+        
+        #Update the epoch in lr scheduler
+        if 'epoch' in fields:
+            self.lr_scheduler.last_epoch = self.epoch
+        # 2021.1.10 Update the epoch in data_samplers
+            for loader in self.loaders:
+                if isinstance(loader.sampler, DistributedSampler):
+                    loader.sampler.set_epoch(self.epoch)
+        return True
 
     def load_state_dict(self, checkpoint=None, distill=False):
         """Loads a network checkpoint file.
@@ -126,5 +225,35 @@ class BaseTrainer:
             load_checkpoint(path_to_checkpoint):
                 Loads the file from the given absolute path (str).
         """
-        pass
+        if distill:
+            net = self.actor.net_teacher 
+        else:
+            net = self.actor.net
+
+        net_type = type(net).__name__
+
+        if isinstance(checkpoint, str):
+            # checkpoint is the path
+            if os.path.isdir(checkpoint):
+                checkpoint_list = sorted(glob.glob('{}/*_ep*.pth.tar'.format(checkpoint)))
+                if checkpoint_list:
+                    checkpoint_path = checkpoint_list[-1]
+                else:
+                    raise Exception('No checkpoint found')
+            else:
+                checkpoint_path = os.path.expanduser(checkpoint)
+        else:
+            raise TypeError
+        
+        print('Loading pretrained model from ', checkpoint_path)
+        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+
+        assert net_type == checkpoint_dict['net_type'], 'Network is not of correct type'
+
+        missing_k, unexpected_k = net.load_state_dict(checkpoint_dict['net'], strict=False)
+        print("previous checkpoint is loaded.")
+        print("missing keys: ", missing_k)
+        print("unexpected keys:", unexpected_k)
+
+        return True
 
