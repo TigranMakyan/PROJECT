@@ -59,9 +59,9 @@ DATA:
   VAL:
     PATH: /home/tigran/scripts/test
     LIST: 
-    - test_data
+    - data
     PAIRS_LIST: 
-    - test_map_pairs.txt
+    - pairs.txt
     MEAN:
     - 0.485
     - 0.456

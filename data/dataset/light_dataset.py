@@ -18,17 +18,22 @@ class Light_Dataset(Dataset):
         super().__init__()
         self.cfg = cfg
         self.mode = mode
-        assert self.mode in ['train', 'val']
+        assert self.mode in ['train', 'val', 'test']
         self.transform = transform
-        self.main_path = cfg.DATA.PATH
+        if self.mode == 'train' or self.mode == 'val':
+            self.main_path = cfg.DATA.PATH
+        elif self.mode == 'test':
+            self.main_path = cfg.DATA.VAL.PATH
         self.data_path = os.path.join(self.main_path, 'data')
         self.scale_dataset = self._collect_data()
 
     def _collect_data(self):
         if self.mode == 'train':
             pairs_path = os.path.join(self.main_path, 'pairs_train.txt')
-        else:
+        elif self.mode == 'val':
             pairs_path = os.path.join(self.main_path, 'pairs_val.txt')
+        else:
+            pairs_path = os.path.join(self.main_path, 'pairs.txt')
 
         with open(pairs_path, 'r') as f:
             pairs = f.readlines()
@@ -53,13 +58,9 @@ class Light_Dataset(Dataset):
         if self.transform is not None:
             image1_tensor = self.transform(image1)
             image2_tensor = self.transform(image2)
-        
-        #mask1 = self._create_mask(image1_tensor.detach().cpu().permute(1, 2, 0).numpy(), mask_size=self.cfg.DATA.SEARCH.SIZE)
-        #mask2 = self._create_mask(image2_tensor.detach().cpu().permute(1, 2, 0).numpy(), mask_size=self.cfg.DATA.SEARCH.SIZE)
-        
+          
         mask1 = self._create_mask_tensor(image1_tensor)
         mask2 = self._create_mask_tensor(image2_tensor)
-        #print(f'In Dataset getitem mask is created with shape" {mask1.shape}, image shape: {image1_tensor.shape}')
 
         return image1_tensor, mask1, image2_tensor, mask2, scale
     
@@ -71,7 +72,6 @@ class Light_Dataset(Dataset):
         gray = cv2.cvtColor(img_arr, cv2.COLOR_BGR2GRAY)
         # Apply a blur to reduce noise
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        #print(blurred.shape, type(blurred))
         # Perform edge detection
         blurredCopy = np.uint8(blurred)
         edges = cv2.Canny(blurredCopy, 50, 150)

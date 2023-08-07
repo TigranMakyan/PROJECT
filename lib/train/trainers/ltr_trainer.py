@@ -50,11 +50,50 @@ class LTRTRainer(BaseTrainer):
     
     def cycle_dataset(self, loader):
         '''Do a cycle of training or validation.'''
-        pass
+        self.actor.train(loader.training)
+        self._init_timing()
+
+        for i, data in enumerate(loader, 1):
+            if self.move_data_to_gpu:
+                data = data.to(self.device)
+
+            data['epoch'] = self.epoch
+            data['settings'] = self.settings
+
+            if not self.use_amp:
+                loss, stats = self.actor(data)
+            else:
+                with autocast():
+                    loss, stats = self.actor(data)
+            
+            if loader.training:
+                self.optimizer.zero_grad()
+                if not self.use_amp:
+                    loss.backward()
+                    if self.settings.grad_clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
+                    self.optimizer.step()
+                else:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+            
+            batch_size = data['template_images'].shape[loader.stack_dim]
+            self._update_stats(stats, batch_size, loader)
+
+            self._print_stats(i, loader, batch_size)
 
     def train_epoch(self):
         '''Do one epoch for each loader'''
-        pass
+        for loader in self.loaders:
+            if self.epoch % loader.epoch_interval == 0:
+                if isinstance(loader.sampler, DistributedSampler):
+                    loader.sampler.set_epoch(self.epoch)
+                self.cycle_dataset(loader)
+
+        self._stats_new_epoch()
+        if self.settings.local_rank in [-1, 0]:
+            self._write_tensorboard()
 
     def _init_timing(self):
         self.num_frames = 0
@@ -63,14 +102,56 @@ class LTRTRainer(BaseTrainer):
 
     def _update_stats(self, new_stats: OrderedDict, batch_size, loader):
         '''Inintialize stats if not initialized yet'''
-        pass
+        if loader.name not in self.stats.keys() or self.stats[loader.name] is None:
+            self.stats[loader.name] = OrderedDict({name: AverageMeter() for name in new_stats.keys()})
+
+        for name, val in new_stats.items():
+            if name not in self.stats[loader.name].keys():
+                self.stats[loader.name][name] = AverageMeter()
+            self.stats[loader.name][name].update(val, batch_size)
 
     def _print_stats(self, i, loader, batch_size):
-        pass
+        self.num_frames += batch_size
+        current_time = time.time()
+        batch_fps = batch_size / (current_time - self.prev_time)
+        average_fps = self.num_frames / (current_time - self.start_time)
+        self.prev_time = current_time
+        if i % self.settings.print_interval == 0 or i == loader.__len__():
+            print_str = '[%s: %d, %d / %d] ' % (loader.name, self.epoch, i, loader.__len__())
+            print_str += 'FPS: %.1f (%.1f)  ,  ' % (average_fps, batch_fps)
+            for name, val in self.stats[loader.name].items():
+                if (self.settings.print_stats is None or name in self.settings.print_stats):
+                    if hasattr(val, 'avg'):
+                        print_str += '%s: %.5f  ,  ' % (name, val.avg)
+                    # else:
+                    #     print_str += '%s: %r  ,  ' % (name, val)
+
+            print(print_str[:-5])
+            log_str = print_str[:-5] + '\n'
+            with open(self.settings.log_file, 'a') as f:
+                f.write(log_str)
+
 
     def _stats_new_epoch(self):
         '''Record learning rate'''
-        pass
+        for loader in self.loaders:
+            if loader.training:
+                try:
+                    lr_list = self.lr_scheduler.get_lr()
+                except:
+                    lr_list = self.lr_scheduler._get_lr(self.epoch)
+                for i, lr in enumerate(lr_list):
+                    var_name = 'LearningRate/group{}'.format(i)
+                    if var_name not in self.stats[loader.name].keys():
+                        self.stats[loader.name][var_name] = StatValue()
+                    self.stats[loader.name][var_name].update(lr)
+
+        for loader_stats in self.stats.values():
+            if loader_stats is None:
+                continue
+            for stat_value in loader_stats.values():
+                if hasattr(stat_value, 'new_epoch'):
+                    stat_value.new_epoch()
 
     def _write_tensorboard(self):
         if self.epoch == 1:

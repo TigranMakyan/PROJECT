@@ -9,7 +9,7 @@ sys.path.insert(0, '.')
 
 from scalers.scale_light.blocks.stark_scale import build_stark_scale_model
 from scalers.scale_light.utils import PreprocessorX, read_config
-from data.dataset.light_dataset import  create_light_datasets
+from data.dataset.light_dataset import  Light_Dataset
 from lib.train.utils import SaveBestModel, params_count_lite, percentile_loss
 
 cfg_path = '/home/tigran/computer_vision/PROJECT/scalers/scale_light/configs/scale.yaml'
@@ -29,7 +29,7 @@ data_list = config.DATA.VAL.LIST
 pairs_list = config.DATA.VAL.PAIRS_LIST
 preprocessor = PreprocessorX()
 
-total_dataset = create_light_datasets(DATA_PATH, data_list, pairs_list, preprocessor)
+total_dataset = Light_Dataset(config, transform_train)
 #CREATE DATASETS FOR TRAINING
 asenq_nkar, _, _, _, _ = total_dataset[0]
 #print(f'NAYI APER: {asenq_nkar.shape}')
@@ -43,7 +43,7 @@ model = build_stark_scale_model(config, 'Train').to(device)
 #model = build_rel_scalenet(pretrained=False, freeze_bb=True, freeze=False).to(device)
 #print(model)
 #model = torch.nn.DataParallel(model)
-checkpoint = torch.load('/home/tigran/computer_vision/PROJECT/weights/light_model_7_1207.pth')
+checkpoint = torch.load('/home/user/computer_vision/PROJECT/weights/aug_model_9_0408.pth')
 model.load_state_dict(checkpoint['model_state_dict'])
 params_count_lite(model)
 
